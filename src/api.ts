@@ -595,12 +595,15 @@ export async function fetchConversation(chatId: string): Promise<ApiConversation
 export async function fetchProjects(): Promise<ApiProjectInfo[]> {
     let cursor: number | null = null
     const allItems: ApiGizmo[] = []
+    const seenCursors = new Set<number>()
     while (true) {
         const url = projectsApi(cursor)
         const { items, cursor: nextCursor = null } = await fetchApi<{ cursor: number | null, items: ApiGizmo[] }>(url)
         cursor = nextCursor
         allItems.push(...items)
         if (nextCursor === null) break
+        if (seenCursors.has(nextCursor)) throw new Error('Project list repeated a cursor')
+        seenCursors.add(nextCursor)
     }
 
     return allItems.map(gizmo => (gizmo.gizmo.gizmo))
@@ -645,6 +648,7 @@ export async function fetchAllConversations(project: string | null = null, maxCo
     const limit = project === null ? 100 : 50 // gizmos api uses a smaller limit
     let offset = 0
     let cursor: string | number = 0 // project conversations use alphanumeric cursors
+    const seenCursors = new Set<string>()
     while (true) {
         try {
             const result: ApiConversations = project === null
@@ -653,10 +657,15 @@ export async function fetchAllConversations(project: string | null = null, maxCo
             if (!result.items) {
                 // Handle potential API errors or empty responses
                 console.warn('fetchAllConversations received no items at offset:', offset)
+                onError?.(new Error(`Conversation list response has no items at offset ${offset}`))
                 break
             }
             conversations.push(...result.items)
-            if (result.items.length === 0) break
+            if (result.has_missing_conversations) onError?.(new Error('Conversation list reports missing conversations'))
+            if (result.items.length === 0) {
+                if (result.cursor != null || (result.total != null && offset < result.total)) onError?.(new Error('Conversation list ended before its reported total'))
+                break
+            }
             onBatch?.(result.items)
             // Stop if the API signals no more pages (no total count and no next cursor)
             if (result.total == null && result.cursor == null) break
@@ -665,6 +674,11 @@ export async function fetchAllConversations(project: string | null = null, maxCo
             if (conversations.length >= maxConversations) break
             // Use the alphanumeric cursor for project conversations, fall back to numeric offset otherwise
             if (result.cursor != null) {
+                if (seenCursors.has(String(result.cursor))) {
+                    onError?.(new Error('Conversation list repeated a cursor'))
+                    break
+                }
+                seenCursors.add(String(result.cursor))
                 cursor = result.cursor
             }
             else {
@@ -790,7 +804,7 @@ async function fetchApi<T>(url: string, options?: RequestInit): Promise<T> {
         if (response.status === 429) {
             throw new RateLimitError(response.headers.get('Retry-After'))
         }
-        throw new Error(response.statusText)
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`)
     }
     return response.json()
 }

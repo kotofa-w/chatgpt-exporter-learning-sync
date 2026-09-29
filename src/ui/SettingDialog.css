@@ -115,3 +115,19 @@
 .ce-meta-add:hover {
     background-color: var(--ce-hover);
 }
+
+.ce-local-sync-card > div:first-child {
+    width: 100%;
+    padding-right: 48px;
+}
+
+.ce-local-sync-interval {
+    width: 5rem;
+    flex: none;
+    margin: 0 4px;
+}
+
+.ce-local-sync-error {
+    margin-top: 8px;
+    color: #a71d2a;
+}

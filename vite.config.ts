@@ -52,6 +52,8 @@ export default defineConfig({
                     'https://chatgpt.com/share/*/continue',
                 ],
                 'icon': 'https://chatgpt.com/favicon.ico',
+                'grant': ['GM_deleteValue', 'GM_getValue', 'GM_setValue', 'GM_xmlhttpRequest'],
+                'connect': ['127.0.0.1'],
                 'run-at': 'document-end',
             },
             build: {

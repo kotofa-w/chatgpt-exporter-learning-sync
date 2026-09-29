@@ -18,6 +18,16 @@ export const KEY_THINKING_ENABLED = 'exporter:enable_thinking'
 export const KEY_SOURCES_ENABLED = 'exporter:enable_sources'
 export const KEY_EXPORT_ALL_LIMIT = 'exporter:export_all_limit'
 export const KEY_EXPORTED_UPDATE_TIMES = 'exporter:exported_update_times'
+export const KEY_LOCAL_SYNC_ENABLED = 'exporter:local_sync_enabled'
+export const KEY_LOCAL_SYNC_INTERVAL_MINUTES = 'exporter:local_sync_interval_minutes'
+export const KEY_LOCAL_SYNC_LAST_RUN_AT = 'exporter:local_sync_last_run_at'
+export const KEY_LOCAL_SYNC_QUEUE = 'exporter:local_sync_queue'
+export const KEY_LOCAL_SYNC_INDEX = 'exporter:local_sync_index'
+export const KEY_LOCAL_SYNC_STATUS = 'exporter:local_sync_status'
+
+export const DEFAULT_LOCAL_SYNC_ENDPOINT = 'http://127.0.0.1:8765/chatgpt-web'
+export const DEFAULT_LOCAL_SYNC_INTERVAL_MINUTES = 60
+export const DEFAULT_LOCAL_SYNC_MAX_CONVERSATIONS = 5000
 
 export const KEY_OAI_LOCALE = 'oai/apps/locale'
 

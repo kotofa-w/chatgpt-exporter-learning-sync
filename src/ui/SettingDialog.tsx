@@ -8,6 +8,7 @@ import { timestamp as _timestamp, dateStr, unixTimestampToISOString } from '../u
 import type { FC } from '../type'
 import { Dialog } from './Dialog'
 import { IconCross, IconTrash } from './Icons'
+import { LocalSyncSettings } from './LocalSyncSettings'
 import { useSettingContext } from './SettingContext'
 import { Toggle } from './Toggle'
 import './SettingDialog.css'
@@ -60,6 +61,7 @@ export const SettingDialog: FC<SettingDialogProps> = ({
         >
             <div className="ce-dialog-body">
                 <dl className="ce-setting-list">
+                    <LocalSyncSettings open={open} />
                     <div className="ce-setting-card">
                         <div>
                             <dt className="ce-setting-title">

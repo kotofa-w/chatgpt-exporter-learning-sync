@@ -2,8 +2,11 @@ import { createContext, useContext } from 'preact/compat'
 import { useCallback, useMemo } from 'preact/hooks'
 import type { FC } from 'preact/compat'
 import {
+    DEFAULT_LOCAL_SYNC_INTERVAL_MINUTES,
     KEY_EXPORT_ALL_LIMIT,
     KEY_FILENAME_FORMAT,
+    KEY_LOCAL_SYNC_ENABLED,
+    KEY_LOCAL_SYNC_INTERVAL_MINUTES,
     KEY_META_ENABLED,
     KEY_META_LIST,
     KEY_SOURCES_ENABLED,
@@ -51,6 +54,10 @@ const SettingContext = createContext({
     setEnableSources: (_: boolean) => {},
     exportAllLimit: defaultExportAllLimit,
     setExportAllLimit: (_: number) => {},
+    localSyncEnabled: false,
+    setLocalSyncEnabled: (_: boolean) => {},
+    localSyncIntervalMinutes: DEFAULT_LOCAL_SYNC_INTERVAL_MINUTES,
+    setLocalSyncIntervalMinutes: (_: number) => {},
     resetDefault: () => {},
 })
 
@@ -68,6 +75,8 @@ export const SettingProvider: FC = ({ children }) => {
     const [enableThinking, setEnableThinking] = useGMStorage(KEY_THINKING_ENABLED, false)
     const [enableSources, setEnableSources] = useGMStorage(KEY_SOURCES_ENABLED, true)
     const [exportAllLimit, setExportAllLimit] = useGMStorage(KEY_EXPORT_ALL_LIMIT, defaultExportAllLimit)
+    const [localSyncEnabled, setLocalSyncEnabled] = useGMStorage(KEY_LOCAL_SYNC_ENABLED, false)
+    const [localSyncIntervalMinutes, setLocalSyncIntervalMinutes] = useGMStorage(KEY_LOCAL_SYNC_INTERVAL_MINUTES, DEFAULT_LOCAL_SYNC_INTERVAL_MINUTES)
 
     const resetDefault = useCallback(() => {
         setFormat(defaultFormat)
@@ -77,6 +86,8 @@ export const SettingProvider: FC = ({ children }) => {
         setEnableThinking(false)
         setEnableSources(true)
         setExportAllLimit(defaultExportAllLimit)
+        setLocalSyncEnabled(false)
+        setLocalSyncIntervalMinutes(DEFAULT_LOCAL_SYNC_INTERVAL_MINUTES)
     }, [
         setFormat,
         setEnableTimestamp,
@@ -85,6 +96,8 @@ export const SettingProvider: FC = ({ children }) => {
         setEnableThinking,
         setEnableSources,
         setExportAllLimit,
+        setLocalSyncEnabled,
+        setLocalSyncIntervalMinutes,
     ])
 
     const value = useMemo(() => ({
@@ -113,6 +126,11 @@ export const SettingProvider: FC = ({ children }) => {
         exportAllLimit,
         setExportAllLimit,
 
+        localSyncEnabled,
+        setLocalSyncEnabled,
+        localSyncIntervalMinutes,
+        setLocalSyncIntervalMinutes,
+
         resetDefault,
     }), [
         format,
@@ -135,6 +153,10 @@ export const SettingProvider: FC = ({ children }) => {
         setEnableSources,
         exportAllLimit,
         setExportAllLimit,
+        localSyncEnabled,
+        setLocalSyncEnabled,
+        localSyncIntervalMinutes,
+        setLocalSyncIntervalMinutes,
         resetDefault,
     ])
 

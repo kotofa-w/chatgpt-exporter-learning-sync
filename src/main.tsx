@@ -1,6 +1,7 @@
 import { render } from 'preact'
 import sentinel from 'sentinel-js'
 import { fetchConversation } from './api'
+import { scheduleLocalAutoSync } from './localSync'
 import { getChatIdFromUrl, isSharePage } from './page'
 import { watchTemporaryChatId } from './temporaryChat'
 import { Menu } from './ui/Menu'
@@ -38,6 +39,8 @@ function main() {
     onloadSafe(() => {
         // eslint-disable-next-line no-console
         console.log('[Exporter] Loaded')
+
+        if (!isSharePage()) scheduleLocalAutoSync()
 
         const styleEl = document.createElement('style')
         styleEl.id = 'sentinel-css'
