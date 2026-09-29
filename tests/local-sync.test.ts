@@ -10,6 +10,7 @@ const state = vi.hoisted(() => ({
     projectError: false,
     projectErrorCode: 403,
     pageError: false,
+    fetchAuthError: false,
     cap: false,
     status: null as Record<string, unknown> | null,
 }))
@@ -47,7 +48,10 @@ vi.mock('../src/api', () => ({
         onHasMore(state.cap || items.length > limit)
         return items.slice(0, limit)
     },
-    fetchConversation: async (id: string) => ({ id, title: id, create_time: 1, update_time: Date.parse((state.main.find(x => x.id === id) ?? state.project.find(x => x.id === id))!.update_time) / 1000, mapping: {} }),
+    fetchConversation: async (id: string) => {
+        if (state.fetchAuthError) throw new Error('HTTP 401: Unauthorized')
+        return { id, title: id, create_time: 1, update_time: Date.parse((state.main.find(x => x.id === id) ?? state.project.find(x => x.id === id))!.update_time) / 1000, mapping: {} }
+    },
 }))
 
 const { runLocalAutoSync, getLocalSyncStatus } = await import('../src/localSync')
@@ -66,6 +70,7 @@ beforeEach(() => {
     state.projectError = false
     state.projectErrorCode = 403
     state.pageError = false
+    state.fetchAuthError = false
     state.cap = false
     state.status = null
 })
@@ -113,5 +118,14 @@ describe('local auto sync', () => {
         await runLocalAutoSync()
         expect(state.posted).toEqual(['A', 'B', 'C'])
         expect((await getLocalSyncStatus())?.queued).toBe(0)
+    })
+
+    it('marks an expired session when individual conversation downloads fail', async () => {
+        state.main = [item('A')]
+        state.project = []
+        state.fetchAuthError = true
+        await runLocalAutoSync()
+        expect((await getLocalSyncStatus())?.session_expired).toBe(true)
+        expect((await getLocalSyncStatus())?.coverage_complete).toBe(false)
     })
 })

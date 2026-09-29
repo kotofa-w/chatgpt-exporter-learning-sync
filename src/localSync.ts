@@ -278,17 +278,31 @@ async function flushQueuedLocalSync(settings: LocalSyncSettings, onProgress?: (p
     return sent
 }
 
-function runQueue(chunk: ApiConversationItem[], onProgress?: (progress: LocalSyncProgress) => void): Promise<{ conversations: ApiConversationWithId[], skipped: readonly string[] }> {
+function runQueue(chunk: ApiConversationItem[], onProgress?: (progress: LocalSyncProgress) => void): Promise<{ conversations: ApiConversationWithId[], skipped: readonly string[], sessionExpired: boolean }> {
     return new Promise((resolve) => {
         const queue = new RequestQueue<ApiConversationWithId>(200, 1600)
+        const authFailures = new Set<string>()
         queue.on('progress', prog => onProgress?.({
             stage: prog.currentStatus === 'rate_limited' ? `rate-limited ${prog.rateLimitWaitSecs ?? ''}s` : prog.currentName,
             completed: prog.completed,
             total: prog.total,
         }))
-        queue.on('done', conversations => resolve({ conversations, skipped: queue.getSkipped() }))
+        queue.on('done', conversations => resolve({ conversations, skipped: queue.getSkipped(), sessionExpired: authFailures.size > 0 }))
         chunk.forEach(({ id, title }) => {
-            queue.add({ name: title, request: () => fetchConversation(id) })
+            queue.add({ name: title, request: async () => {
+                try {
+                    const conversation = await fetchConversation(id)
+                    authFailures.delete(id)
+                    return conversation
+                }
+                catch (error) {
+                    if (isSessionExpiredError(error)) {
+                        authFailures.add(id)
+                        queue.stop()
+                    }
+                    throw error
+                }
+            } })
         })
         queue.start()
     })
@@ -386,10 +400,14 @@ export async function runLocalAutoSync(
     status.skipped = checkedItems.length - syncItems.length
     for (let i = 0; i < chunks.length; i++) {
         onProgress?.({ stage: `fetching batch ${i + 1}/${chunks.length}`, completed: status.synced, total: syncItems.length })
-        const { conversations, skipped } = await runQueue(chunks[i], (progress) => {
+        const { conversations, skipped, sessionExpired } = await runQueue(chunks[i], (progress) => {
             if (progress.stage.startsWith('rate-limited')) status.rate_limited = true
             onProgress?.(progress)
         })
+        if (sessionExpired) {
+            status.session_expired = true
+            errors.push('ChatGPT session expired during conversation fetch')
+        }
         if (skipped.length) errors.push(`${skipped.length} conversation fetches failed`)
         if (conversations.length > 0) {
             const filename = buildJsonBatchFileName(undefined, chunks.length > 1 ? { part: i + 1, total: chunks.length } : undefined)
@@ -404,6 +422,7 @@ export async function runLocalAutoSync(
             }
         }
         if (i < chunks.length - 1) await sleep(400)
+        if (sessionExpired) break
     }
     status.queued = getQueue().length
     status.coverage_complete = errors.length === 0 && receiverOnline && status.queued === 0
