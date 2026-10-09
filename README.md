@@ -1,263 +1,99 @@
-<h1 align="center">ChatGPT Exporter</h1>
+# ChatGPT Exporter Learning Sync
 
-<div align="center">
+基于 [ChatGPT Exporter](https://github.com/pionxzh/chatgpt-exporter) 的本地增量归档分支，为学习笔记和会话复盘提供可追溯的完整会话原文。
 
-## A GreasyFork script to export the chat history of [ChatGPT](https://chatgpt.com/)
+仓库：[kotofa-w/chatgpt-exporter-learning-sync](https://github.com/kotofa-w/chatgpt-exporter-learning-sync)。同步功能位于 [`feature/learning-os-auto-sync`](https://github.com/kotofa-w/chatgpt-exporter-learning-sync/tree/feature/learning-os-auto-sync) 分支，默认 `master` 保留上游代码。保留上游的 Text、Markdown、HTML、PNG、JSON 导出功能，并增加浏览器同步与 Python 本地接收端。
 
-[![license][license-image]][license-url]
-[![release][release-image]][release-url]
-[![GreasyFork][GreasyFork-image]][GreasyFork-url]
+## 功能
 
-[license-image]: https://img.shields.io/github/license/pionxzh/chatgpt-exporter?color=red
-[license-url]: https://github.com/pionxzh/chatgpt-exporter/blob/master/LICENSE
-[release-image]: https://img.shields.io/github/v/release/pionxzh/chatgpt-exporter?color=blue
-[release-url]: https://github.com/pionxzh/chatgpt-exporter/releases/latest
-[GreasyFork-image]: https://img.shields.io/static/v1?label=%20&message=GreasyFork&style=flat-square&labelColor=7B0000&color=960000&logo=data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAABmJLR0QA/wD/AP+gvaeTAAAACXBIWXMAAAsTAAALEwEAmpwYAAAAB3RJTUUH3ggEBCQHM3fXsAAAAVdJREFUOMudkz2qwkAUhc/goBaGJBgUtBCZyj0ILkpwAW7Bws4yO3AHLiCtEFD8KVREkoiFxZzX5A2KGfN4F04zMN+ce+5c4LMUgDmANYBnrnV+plBSi+FwyHq9TgA2LQpvCiEiABwMBtzv95RSfoNEHy8DYBzHrNVqVEr9BWKcqNFoxF6vx3a7zc1mYyC73a4MogBg7vs+z+czO50OW60Wt9stK5UKp9Mpj8cjq9WqDTBHnjAdxzGQZrPJw+HA31oulzbAWgLoA0CWZVBKIY5jzGYzdLtdE9DlcrFNrY98zobqOA6TJKHW2jg4nU5sNBpFDp6mhVe5rsvVasUwDHm9Xqm15u12o+/7Hy0gD8KatOd5vN/v1FozTVN6nkchxFuI6hsAAIMg4OPxMJCXdtTbR7JJCMEgCJhlGUlyPB4XfumozInrupxMJpRSRtZlKoNYl+m/6/wDuWAjtPfsQuwAAAAASUVORK5CYII=
-[GreasyFork-url]: https://greasyfork.org/scripts/456055-chatgpt-exporter
+- 每轮从第一页枚举 ChatGPT 主会话列表与所有 Projects，按会话 ID 去重。
+- 与本地索引比较更新时间，只下载新增或更新的完整会话 JSON。
+- 原始批次文件不覆盖；索引指向每个会话最新归档版本。
+- 支持 `Sync Now`、定时同步和失败批次重试；默认自动同步间隔为 60 分钟，需在设置中启用。
+- 保存同步状态，供下游检查本轮是否完整。
 
-English &nbsp;&nbsp;|&nbsp;&nbsp; [Français](./README_FR.md) &nbsp;&nbsp;|&nbsp;&nbsp; [Indonesia](./README_ID.md) &nbsp;&nbsp;|&nbsp;&nbsp; [한국어](./README_KR.md) &nbsp;&nbsp;|&nbsp;&nbsp; [Türkçe](./README_TR.md)
+本项目负责归档原文，不自动生成 Obsidian 笔记，也不内置 GitHub 云备份；总结、去重写作和备份由下游任务实现。
 
-![image](https://github.com/pionxzh/chatgpt-exporter/assets/9910706/1c864670-7912-4484-b4be-bdf5dde51557)
+## 快速开始
 
-## Install
+### 1. 获取并构建本项目
 
-### Prerequisites
+需要 Node.js 20+、pnpm（项目指定版本为 8.14.1）和 Python 3.10+。接收端只使用 Python 标准库。
 
-<align>Install <b>`Tampermonkey`</b></align>
-
-[<img src="https://user-images.githubusercontent.com/3750161/214147732-c75e96a4-48a4-4b64-b407-c2402e899a75.PNG" height="60" alt="Chrome" valign="middle">][link-chrome] &nbsp;&nbsp; [<img src="https://user-images.githubusercontent.com/3750161/214148610-acdef778-753e-470e-8765-6cc97bca85ed.png" height="60" alt="Firefox" valign="middle">][link-firefox] &nbsp;&nbsp; [<img src="https://user-images.githubusercontent.com/3750161/233201810-d1026855-0482-44c8-b1ec-c7247134473e.png" height="60" alt="Chrome" valign="middle">][link-edge]
-
-[link-chrome]: https://chrome.google.com/webstore/detail/tampermonkey/dhdgffkkebhmkfjojejmpbldmpobfkfo 'Chrome Web Store'
-[link-firefox]: https://addons.mozilla.org/firefox/addon/tampermonkey 'Firefox Add-ons'
-[link-edge]: https://microsoftedge.microsoft.com/addons/detail/tampermonkey/iikmkjmpaadaobahmlepeloendndfphd 'Edge Add-ons'
-
-### UserScript
-
-| Greasyfork                                                                        | GitHub                                                                                       |
-| --------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
-| [![Install][Install-1-image]][install-1-url] | [![Install][Install-2-image]][install-2-url] |
-
-[Install-1-image]: https://img.shields.io/badge/-Install-blue
-[Install-1-url]: https://greasyfork.org/scripts/456055-chatgpt-exporter
-[Install-2-image]: https://img.shields.io/badge/-Install-blue
-[Install-2-url]: https://raw.githubusercontent.com/pionxzh/chatgpt-exporter/master/dist/chatgpt.user.js
-
-> Make sure that the [`Allow User Scripts` is enabled](https://www.tampermonkey.net/faq.php?q=Q209) in your browser settings for Tampermonkey.
-
-#
-
-[📚 Supported Formats](#-supported-formats) &nbsp;&nbsp;|&nbsp;&nbsp; [💡 Example](#-example) &nbsp;&nbsp;|&nbsp;&nbsp; [📤 Export Multiple Conversations](#-export-multiple-conversations) &nbsp;&nbsp;|&nbsp;&nbsp; [🤝 Contribution](#-contribution) &nbsp;&nbsp;|&nbsp;&nbsp; [⭐ Star History](#-star-history)
-
-</div>
-
-#
-
-## 📚 Supported Formats
-
-- [Text](#text)
-- [HTML](#html)
-- [Markdown](#markdown)
-- [PNG](#screenshot)
-- [JSON](#json)
-
-## 💡 Example
-
-### Text
-
-```
-You:
-I'm creating a ChatGPT Exporter. What do you think?
-
-ChatGPT:
-It sounds like you're planning on creating a tool that uses the ChatGPT model
-to export text. ChatGPT is a large language model trained by OpenAI that is
-designed to generate human-like text responses based on a given input. It can
-be used for a variety of applications, such as chatbots, automated responses
-to customer inquiries, and more.
-
-However, please keep in mind that as a large language model, ChatGPT has not
-been specifically trained for any specific task, so the quality of the
-generated text will depend on how it is used and the context in which it is
-applied. It's important to use ChatGPT responsibly and consider the potential
-consequences of using it in any given situation.
+```powershell
+git clone --branch feature/learning-os-auto-sync https://github.com/kotofa-w/chatgpt-exporter-learning-sync.git
+cd chatgpt-exporter-learning-sync
+pnpm install
+pnpm build
 ```
 
-### HTML
+### 2. 安装 userscript
 
-<div align="center">
+1. 在浏览器安装 [Tampermonkey](https://www.tampermonkey.net/)。按浏览器要求启用 [Allow User Scripts](https://www.tampermonkey.net/faq.php?q=Q209)。
+2. 点击 Tampermonkey 图标 → **管理面板 / Dashboard** → **实用工具 / Utilities** → **从文件导入 / Import from file**，选择本项目构建出的 `dist/chatgpt.user.js`，确认安装。
+3. 打开并登录 [ChatGPT](https://chatgpt.com/)，刷新页面，确认出现 Exporter / 导出助手。
 
-<img width="643" alt="image" src="https://github.com/pionxzh/chatgpt-exporter/assets/9910706/47481c7a-4a6a-433b-b08e-fdf3bbabcb64">
+请安装本仓库构建产物；上游 GreasyFork 安装包不包含这里的本地同步功能。若已有旧版 Exporter，避免同时启用多个版本。
 
-</div>
+### 3. 启动本地接收端
 
-### Markdown
+在项目根目录运行并保持该进程运行：
 
-```
----
-title: ChatGPT Exporter Creation
-source: https://chat.openai.com/c/cf3f8850-1d69-43c8-b99b-affd0de4e76f
-author: ChatGPT
----
-
-# ChatGPT Exporter Creation
-
-#### You:
-I'm creating a ChatGPT Exporter. What do you think?
-
-#### ChatGPT:
-It sounds like you're planning on creating a tool that uses the ChatGPT model to export text. ChatGPT is a large language model trained by OpenAI that is designed to generate human-like text responses based on a given input. It can be used for a variety of applications, such as chatbots, automated responses to customer inquiries, and more.
+```powershell
+python receiver/chatgpt_auto_sync_receiver.py --archive-root "$HOME\AI Chat History"
 ```
 
-### Screenshot
+默认监听 `127.0.0.1:8765`，归档目录可自行指定。另开终端检查：
 
-<div align="center">
-<img width="480" src="https://user-images.githubusercontent.com/9910706/205663680-6ac97fac-39b0-495c-bee4-8ef37713a9ae.png" />
-
-</div>
-
-### JSON
-
-the raw content from API `https://chat.openai.com/backend-api/conversation/[id]`
-
-<details>
-<summary>Click to see</summary>
-
-```json
-{
-    "id": "35a1fa05-e928-4c39-8ffa-ca74f75b509f",
-    "title": "AI Turing Test.",
-    "create_time": 1678015311.655875,
-    "mapping": {
-        "5c48fa3e-e4ee-4d00-aa66-8fbcb671a358": {
-            "id": "5c48fa3e-e4ee-4d00-aa66-8fbcb671a358",
-            "message": {
-                "id": "5c48fa3e-e4ee-4d00-aa66-8fbcb671a358",
-                "author": {
-                    "role": "system",
-                    "metadata": {}
-                },
-                "create_time": 1678015311.655875,
-                "content": {
-                    "content_type": "text",
-                    "parts": [
-                        ""
-                    ]
-                },
-                "end_turn": true,
-                "weight": 1,
-                "metadata": {},
-                "recipient": "all"
-            },
-            "parent": "9310b90f-d8f0-4be6-bac2-daacddac784f",
-            "children": [
-                "4afb9720-3a88-49b1-9309-e2b53d607f34"
-            ]
-        },
-        "9310b90f-d8f0-4be6-bac2-daacddac784f": {
-            "id": "9310b90f-d8f0-4be6-bac2-daacddac784f",
-            "children": [
-                "5c48fa3e-e4ee-4d00-aa66-8fbcb671a358"
-            ]
-        },
-        "4afb9720-3a88-49b1-9309-e2b53d607f34": {
-            "id": "4afb9720-3a88-49b1-9309-e2b53d607f34",
-            "message": {
-                "id": "4afb9720-3a88-49b1-9309-e2b53d607f34",
-                "author": {
-                    "role": "user",
-                    "metadata": {}
-                },
-                "create_time": 1678015311.656259,
-                "content": {
-                    "content_type": "text",
-                    "parts": [
-                        "write an poem about the Turing test"
-                    ]
-                },
-                "weight": 1,
-                "metadata": {
-                    "timestamp_": "absolute"
-                },
-                "recipient": "all"
-            },
-            "parent": "5c48fa3e-e4ee-4d00-aa66-8fbcb671a358",
-            "children": [
-                "7027f1a5-8bd5-4463-9869-8a1d1db2f9a1"
-            ]
-        },
-        "7027f1a5-8bd5-4463-9869-8a1d1db2f9a1": {
-            "id": "7027f1a5-8bd5-4463-9869-8a1d1db2f9a1",
-            "message": {
-                "id": "7027f1a5-8bd5-4463-9869-8a1d1db2f9a1",
-                "author": {
-                    "role": "assistant",
-                    "metadata": {}
-                },
-                "create_time": 1678185638.890551,
-                "content": {
-                    "content_type": "text",
-                    "parts": [
-                        "In the realm of machines and code,\nThere lies a test, with rules bestowed,\nA challenge to determine true mind,\nAnd if a machine's intelligence can find.\n\nThe Turing test, named for its creator,\nSeeks to find if a machine's behavior\nCan mimic that of a human so well,\nThat it's indistinguishable, can you tell?\n\nThrough conversations, the test is done,\nWith a judge and a machine, the game is run,\nIf the judge can't tell who is who,\nThen the machine's intelligence shines through.\n\nBut can a machine truly think?\nOr is it just a clever bit of link,\nBetween algorithms and programming code,\nCan it truly understand and decode?\n\nThe Turing test, a thought experiment,\nBrings up questions, doubts, and sentiment,\nFor as we strive to create machines smart,\nWe wonder, will they ever truly have heart?\n\nSo let us ponder and explore,\nAs we create machines more and more,\nThe Turing test a reminder to be,\nMindful of what our machines can truly see."
-                    ]
-                },
-                "end_turn": false,
-                "weight": 1,
-                "metadata": {
-                    "model_slug": "text-davinci-002-render-sha",
-                    "finish_details": {
-                        "type": "stop"
-                    },
-                    "timestamp_": "absolute"
-                },
-                "recipient": "all"
-            },
-            "parent": "4afb9720-3a88-49b1-9309-e2b53d607f34",
-            "children": []
-        }
-    },
-    "moderation_results": [],
-    "current_node": "7027f1a5-8bd5-4463-9869-8a1d1db2f9a1"
-}
+```powershell
+Invoke-RestMethod http://127.0.0.1:8765/ping
 ```
-</details>
 
-## 📤 Export Multiple Conversations
+返回 `ok: true` 表示接收端可用。默认浏览器同步地址固定为该端口；不要仅修改接收端端口。启动命令不会安装开机服务，重启后需重新启动。
 
-When you click the "Export All" button, the **Export Conversations** dialog pops up. Here are the functions you can access.
+### 4. 执行同步
 
-**Export from official export file (conversations.json)**
+在 ChatGPT 页面打开 **Exporter / 导出助手 → Settings / 设置**，点击 **Sync Now**，等待同步结束。需要周期同步时启用 **Enable Auto Sync** 并保存间隔。
 
-Click the upload icon button to upload a JSON file of conversations, such as one downloaded from OpenAI.
+浏览器必须保持已登录的 ChatGPT 标签页打开，接收端也必须运行。下游定时任务应主动触发本轮同步并等待结果，不能只依赖此前的 60 分钟同步状态。
 
-**Export from API**
+## 归档结构与完整性
 
-In the list of all your conversations, select which conversations you want to export. Check the "Select All" checkbox to export all your conversations.
+```text
+AI Chat History/
+├── source/chatgpt-web/          # 完整会话 JSON 批次，保留历史版本
+└── state/
+    ├── conversation-index.json # 按会话 ID 保存最新原文位置
+    └── sync-status.json        # 最近同步结果
+```
 
-Select your export format from the dropdown on the bottom left. You can choose from the following formats.
+索引记录中的 `raw_path` 指向原文文件，`raw_index` 指向批次内的会话；读取后应核对会话 ID。完整字段与接口见 [本地同步说明](https://github.com/kotofa-w/chatgpt-exporter-learning-sync/blob/feature/learning-os-auto-sync/README_LOCAL_SYNC.md) 和 [接收端说明](https://github.com/kotofa-w/chatgpt-exporter-learning-sync/blob/feature/learning-os-auto-sync/receiver/README.md)。
 
-- **Markdown**
-- **HTML**
-- **JSON**
-- **JSON (ZIP)**
+下游读取前至少检查：
 
-Click the button to perform the action you want.
+- `last_attempt_at` 不早于本轮启动时间，`last_success_at` 不早于该次 attempt。
+- `coverage_complete=true`、`queued=0`、`last_error=null`，对应原文存在且可读。
 
-- **Archive** -  Archived chat sessions will disappear from the sidebar and can be managed in ChatGPT settings. See [#199](https://github.com/pionxzh/chatgpt-exporter/issues/199) for more details.
-- **Delete** - Deletes the selected conversations.
-- **Export** - Exports the selected conversations in the format chosen using the format selector.
+部分失败也可能已保存原文，不能把“有文件”当成完整同步成功。覆盖标记仅表示本轮主列表与 Projects 枚举及所需原文归档完成，不保证 Archived、Shared 或 Codex/Work 会话全量。当前每个列表扫描上限为 5000；触及上限且还有下一页时会标记不完整。归档保存 API 返回的会话对象，不保证附件二进制文件已下载。
 
-## 💬 Using DeepSeek too?
+## 常见问题
 
-Check out [**DeepSeek Exporter**](https://github.com/pionxzh/deepseek-exporter) — the sister project that brings the same one-click export to [DeepSeek](https://chat.deepseek.com/), including DeepThink reasoning and web-search sources.
+- **找不到管理面板**：打开浏览器扩展菜单，点击 Tampermonkey，再选择 Dashboard；导出助手的设置位于 ChatGPT 页面内。
+- **页面没有导出助手**：确认安装的是本仓库脚本、脚本已启用、浏览器允许 userscript，随后刷新 ChatGPT。
+- **接收端无法连接**：检查进程是否仍运行，以及 `/ping` 是否返回成功。
+- **会话未完整同步**：查看 `last_error`、登录状态、限流与待发送队列；修复后再次运行同步。
 
-## 🤝 Contribution
+## 开发与检查
 
-See [CONTRIBUTING.md](./CONTRIBUTING.md)
+```powershell
+pnpm test
+pnpm lint
+pnpm build
+python -m unittest discover -s receiver -p 'test_*.py' -v
+```
 
-## ⭐ Star History
+自动化测试使用合成 API 响应；真实浏览器同步需要已登录的 ChatGPT 页面。
 
-<div align="center">
+## 来源与许可证
 
-<img src="https://star-history.dera.page/svg?repos=pionxzh/chatgpt-exporter&type=Date" width="600" height="400" alt="Star History Chart" valign="middle">
-
-</div>
+基于 [pionxzh/chatgpt-exporter](https://github.com/pionxzh/chatgpt-exporter) 与 [mubaiblake/chatgpt-exporter-auto-sync](https://github.com/mubaiblake/chatgpt-exporter-auto-sync)，保留原作者归属与 [MIT License](LICENSE)。上游贡献说明见 [CONTRIBUTING.md](CONTRIBUTING.md)。
