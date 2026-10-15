@@ -3,7 +3,7 @@
 // @name:zh-CN         ChatGPT Exporter
 // @name:zh-TW         ChatGPT Exporter
 // @namespace          pionxzh
-// @version            2.36.3
+// @version            2.36.4
 // @author             pionxzh
 // @description        Export ChatGPT conversations with one click — backup & share effortlessly!
 // @description:zh-CN  一键导出 ChatGPT 对话，轻松备份与分享
@@ -1221,7 +1221,7 @@
 	var package_default = {
 		name: "@pionxzh/chatgpt-exporter",
 		type: "module",
-		version: "2.36.3",
+		version: "2.36.4",
 		"private": true,
 		packageManager: "pnpm@8.14.1",
 		title: "ChatGPT Exporter",
@@ -1772,9 +1772,28 @@
 		url.hash = "";
 		return url.toString();
 	}
-	function localRequest(method, url, body) {
+	var activeLease = null;
+	var syncRunning = false;
+	function bridgeEndpoint(endpoint, path) {
+		const url = new URL(statusEndpoint(endpoint));
+		url.pathname = `/chatgpt-web/${path}`;
+		return url.toString();
+	}
+	function checkDeadline() {
+		if (activeLease && Date.now() >= new Date(activeLease.deadline_at).getTime()) throw new Error("sync deadline exceeded");
+	}
+	async function bridgePost(endpoint, path, body) {
+		const response = await localRequest("POST", bridgeEndpoint(endpoint, path), body, false);
+		if (response.status < 200 || response.status >= 300) throw new Error(`Sync bridge failed: ${response.status} ${response.responseText}`);
+		return JSON.parse(response.responseText);
+	}
+	function localRequest(method, url, body, useLease = true) {
 		return new Promise((resolve, reject) => {
 			const headers = {};
+			if (useLease && activeLease) {
+				checkDeadline();
+				headers["X-Local-Sync-Claim"] = activeLease.claim_token;
+			}
 			if (body !== void 0) headers["Content-Type"] = "application/json";
 			_GM_xmlhttpRequest({
 				method,
@@ -1881,11 +1900,15 @@
 				completed: prog.completed,
 				total: prog.total
 			}));
-			queue.on("done", (conversations) => resolve({
-				conversations,
-				skipped: queue.getSkipped(),
-				sessionExpired: authFailures.size > 0
-			}));
+			const deadlineTimer = activeLease ? setTimeout(() => queue.stop(), Math.max(1, new Date(activeLease.deadline_at).getTime() - Date.now())) : void 0;
+			queue.on("done", (conversations) => {
+				clearTimeout(deadlineTimer);
+				resolve({
+					conversations,
+					skipped: queue.getSkipped(),
+					sessionExpired: authFailures.size > 0
+				});
+			});
 			chunk.forEach(({ id, title }) => {
 				queue.add({
 					name: title,
@@ -1907,7 +1930,7 @@
 			queue.start();
 		});
 	}
-	async function runLocalAutoSync(options = {}, onProgress) {
+	async function performLocalAutoSync(options = {}, onProgress) {
 		const settings = {
 			...getSettings(),
 			...options
@@ -1927,7 +1950,8 @@
 			session_expired: false,
 			rate_limited: false,
 			last_error: null,
-			exporter_version: package_default.version
+			exporter_version: package_default.version,
+			project_inventory: false
 		};
 		ScriptStorage.set(KEY_LOCAL_SYNC_LAST_RUN_AT, Date.now());
 		await publishStatus(endpoint, status);
@@ -1945,6 +1969,7 @@
 		}
 		const items = [];
 		const loadInventory = async (project) => {
+			checkDeadline();
 			const remaining = maxConversations - uniqueConversations(items).length;
 			if (remaining <= 0) {
 				errors.push("conversation inventory reached maxConversations");
@@ -1962,6 +1987,7 @@
 				if (error instanceof RateLimitError || /\b429\b/.test(errorText(error))) status.rate_limited = true;
 			};
 			const found = await fetchAllConversations(project, remaining, void 0, onHasMore, onError);
+			checkDeadline();
 			items.push(...found);
 			if (capped && !failed) errors.push(`${project ?? "main"} inventory reached maxConversations`);
 		};
@@ -1970,6 +1996,16 @@
 		onProgress?.({ stage: "loading projects" });
 		try {
 			const projects = await fetchProjects();
+			try {
+				const response = await localRequest("POST", bridgeEndpoint(endpoint, "projects"), { projects: projects.map((project) => ({
+					id: project.id,
+					name: project.display.name
+				})) });
+				if (response.status < 200 || response.status >= 300) throw new Error(`HTTP ${response.status}: ${response.responseText}`);
+				status.project_inventory = true;
+			} catch (error) {
+				errors.push(`project inventory: ${errorText(error)}`);
+			}
 			for (const project of projects) await loadInventory(project.id);
 		} catch (error) {
 			errors.push(`projects: ${errorText(error)}`);
@@ -1982,6 +2018,7 @@
 		status.checked = checkedItems.length;
 		status.skipped = checkedItems.length - syncItems.length;
 		for (let i = 0; i < chunks.length; i++) {
+			checkDeadline();
 			onProgress?.({
 				stage: `fetching batch ${i + 1}/${chunks.length}`,
 				completed: status.synced,
@@ -1991,6 +2028,7 @@
 				if (progress.stage.startsWith("rate-limited")) status.rate_limited = true;
 				onProgress?.(progress);
 			});
+			checkDeadline();
 			if (sessionExpired) {
 				status.session_expired = true;
 				errors.push("ChatGPT session expired during conversation fetch");
@@ -2012,6 +2050,7 @@
 			if (i < chunks.length - 1) await sleep(400);
 			if (sessionExpired) break;
 		}
+		checkDeadline();
 		status.queued = getQueue().length;
 		status.coverage_complete = errors.length === 0 && receiverOnline && status.queued === 0;
 		status.last_error = errors.length ? errors.join("; ") : null;
@@ -2028,6 +2067,7 @@
 			total: syncItems.length
 		});
 		return {
+			status: { ...status },
 			conversations: status.synced,
 			batches: chunks.length,
 			queued: status.queued,
@@ -2035,23 +2075,56 @@
 			skipped: status.skipped
 		};
 	}
+	async function runLocalAutoSync(options = {}, onProgress, request) {
+		if (syncRunning) throw new Error("another sync is running in this tab");
+		syncRunning = true;
+		const endpoint = options.endpoint || "http://127.0.0.1:8765/chatgpt-web";
+		try {
+			activeLease = request ?? (await bridgePost(endpoint, "sync-lease", { timeout_seconds: 1800 })).lease ?? null;
+			if (!activeLease) throw new Error("receiver did not grant a sync lease");
+			return await performLocalAutoSync(options, onProgress);
+		} finally {
+			const lease = activeLease;
+			activeLease = null;
+			if (lease && !request) try {
+				await bridgePost(endpoint, "sync-lease/release", { claim_token: lease.claim_token });
+			} catch {}
+			syncRunning = false;
+		}
+	}
 	function scheduleLocalAutoSync() {
-		let running = false;
+		let polling = false;
 		const tick = async () => {
+			if (polling || syncRunning) return;
+			polling = true;
 			const settings = getSettings();
-			if (!settings.enabled || running) return;
-			const intervalMs = Math.max(1, Number(settings.intervalMinutes) || 60) * 6e4;
-			const lastRunAt = ScriptStorage.get("exporter:local_sync_last_run_at") ?? 0;
-			if (Date.now() - lastRunAt < intervalMs) return;
-			running = true;
 			try {
-				await runLocalAutoSync(settings);
+				const { request } = await bridgePost(settings.endpoint, "sync-requests/claim", {});
+				if (request) {
+					let status = null;
+					let error = null;
+					try {
+						status = (await runLocalAutoSync(settings, void 0, request)).status;
+					} catch (failure) {
+						error = errorText(failure);
+					}
+					await bridgePost(settings.endpoint, `sync-requests/${request.request_id}/result`, {
+						claim_token: request.claim_token,
+						status,
+						error
+					});
+					return;
+				}
+				if (!settings.enabled) return;
+				const intervalMs = Math.max(1, Number(settings.intervalMinutes) || 60) * 6e4;
+				const lastRunAt = ScriptStorage.get("exporter:local_sync_last_run_at") ?? 0;
+				if (Date.now() - lastRunAt >= intervalMs) await runLocalAutoSync(settings);
 			} catch {} finally {
-				running = false;
+				polling = false;
 			}
 		};
 		setTimeout(tick, 5e3);
-		setInterval(tick, 6e4);
+		setInterval(tick, 5e3);
 	}
 	var t$1;
 	var r;

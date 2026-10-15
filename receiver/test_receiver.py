@@ -1,6 +1,7 @@
 """Small black-box check for the local receiver's data contract."""
 
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 import shutil
 from threading import Thread
@@ -74,6 +75,37 @@ class ReceiverTest(unittest.TestCase):
         self.start_receiver()
         self.assertEqual(self.request("GET", "/chatgpt-web/index")[1]["count"], 1)
         self.assertEqual(self.request("GET", "/chatgpt-web/status")[1]["status"]["last_success_at"], state["last_success_at"])
+
+    def test_project_inventory_requires_lease_and_preserves_existing_names(self):
+        endpoint = "/chatgpt-web/projects"
+        payload = {"projects": [{"id": "g-p-empty", "name": "Empty"}]}
+        self.assertEqual(self.request("POST", endpoint, payload)[0], 409)
+        lease = self.request("POST", "/chatgpt-web/sync-lease", {})[1]["lease"]
+        headers = {"Content-Type": "application/json", "X-Local-Sync-Claim": lease["claim_token"]}
+        def post(value):
+            request = Request(f"http://127.0.0.1:{self.port}{endpoint}", json.dumps(value).encode(), headers=headers)
+            try:
+                with urlopen(request, timeout=3) as reply:
+                    return reply.status
+            except HTTPError as error:
+                return error.code
+        self.assertEqual(post(payload), 200)
+        saved = (self.root / "projects.json").read_bytes()
+        for invalid in ({"projects": [{"id": "../bad", "name": "Bad"}]}, {"projects": payload["projects"] * 2}):
+            self.assertEqual(post(invalid), 400)
+            self.assertEqual((self.root / "projects.json").read_bytes(), saved)
+        self.assertEqual(post({"projects": [{"id": "g-p-empty", "name": "Renamed"}, {"id": "g-p-new", "name": "New"}]}), 200)
+        projects = json.loads((self.root / "projects.json").read_text(encoding="utf-8"))["projects"]
+        self.assertEqual(projects, payload["projects"] + [{"id": "g-p-new", "name": "New"}])
+        self.assertIn("project_inventory", self.request("GET", "/ping")[1]["capabilities"])
+        self.assertEqual(self.request("POST", "/chatgpt-web/sync-lease/release", {"claim_token": lease["claim_token"]})[0], 200)
+        request = self.request("POST", "/chatgpt-web/sync-requests", {})[1]["request"]
+        claim = self.request("POST", "/chatgpt-web/sync-requests/claim", {})[1]["request"]
+        now = datetime.now(timezone.utc).isoformat()
+        status = {"schema_version": 1, "last_attempt_at": now, "last_success_at": now, "coverage_complete": True, "checked": 0, "synced": 0, "skipped": 0, "queued": 0, "session_expired": False, "rate_limited": False, "last_error": None, "exporter_version": "legacy"}
+        code, result = self.request("POST", f"/chatgpt-web/sync-requests/{request['request_id']}/result", {"claim_token": claim["claim_token"], "status": status})
+        self.assertEqual(code, 200)
+        self.assertFalse(result["request"]["status"]["project_inventory"])
 
     def test_bad_input_does_not_write_raw(self):
         self.assertEqual(self.request("POST", "/chatgpt-web", {"conversations": [{"id": "x"}]}, "https://example.com")[0], 401)

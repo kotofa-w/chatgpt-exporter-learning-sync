@@ -33,6 +33,7 @@ export interface LocalSyncProgress {
 }
 
 export interface LocalSyncResult {
+    status: SyncStatus
     conversations: number
     batches: number
     queued: number
@@ -53,6 +54,7 @@ export interface SyncStatus {
     rate_limited: boolean
     last_error: string | null
     exporter_version: string
+    project_inventory: boolean
 }
 
 interface QueuedLocalSyncPayload {
@@ -156,9 +158,41 @@ function statusEndpoint(endpoint: string): string {
     return url.toString()
 }
 
-function localRequest(method: 'GET' | 'POST', url: string, body?: unknown): Promise<LocalHttpResponse> {
+interface SyncLease {
+    claim_token: string
+    deadline_at: string
+}
+
+interface SyncRequest extends SyncLease {
+    request_id: string
+}
+
+let activeLease: SyncLease | null = null
+let syncRunning = false
+
+function bridgeEndpoint(endpoint: string, path: string): string {
+    const url = new URL(statusEndpoint(endpoint))
+    url.pathname = `/chatgpt-web/${path}`
+    return url.toString()
+}
+
+function checkDeadline() {
+    if (activeLease && Date.now() >= new Date(activeLease.deadline_at).getTime()) throw new Error('sync deadline exceeded')
+}
+
+async function bridgePost(endpoint: string, path: string, body: unknown) {
+    const response = await localRequest('POST', bridgeEndpoint(endpoint, path), body, false)
+    if (response.status < 200 || response.status >= 300) throw new Error(`Sync bridge failed: ${response.status} ${response.responseText}`)
+    return JSON.parse(response.responseText) as { request?: SyncRequest | null, lease?: SyncLease }
+}
+
+function localRequest(method: 'GET' | 'POST', url: string, body?: unknown, useLease = true): Promise<LocalHttpResponse> {
     return new Promise((resolve, reject) => {
         const headers: Record<string, string> = {}
+        if (useLease && activeLease) {
+            checkDeadline()
+            headers['X-Local-Sync-Claim'] = activeLease.claim_token
+        }
         if (body !== undefined) headers['Content-Type'] = 'application/json'
 
         GM_xmlhttpRequest({
@@ -287,7 +321,11 @@ function runQueue(chunk: ApiConversationItem[], onProgress?: (progress: LocalSyn
             completed: prog.completed,
             total: prog.total,
         }))
-        queue.on('done', conversations => resolve({ conversations, skipped: queue.getSkipped(), sessionExpired: authFailures.size > 0 }))
+        const deadlineTimer = activeLease ? setTimeout(() => queue.stop(), Math.max(1, new Date(activeLease.deadline_at).getTime() - Date.now())) : undefined
+        queue.on('done', (conversations) => {
+            clearTimeout(deadlineTimer)
+            resolve({ conversations, skipped: queue.getSkipped(), sessionExpired: authFailures.size > 0 })
+        })
         chunk.forEach(({ id, title }) => {
             queue.add({ name: title, request: async () => {
                 try {
@@ -319,7 +357,7 @@ export async function postLocalSync(endpoint: string, filename: string, conversa
     }
 }
 
-export async function runLocalAutoSync(
+async function performLocalAutoSync(
     options: Partial<LocalSyncSettings> = {},
     onProgress?: (progress: LocalSyncProgress) => void,
 ): Promise<LocalSyncResult> {
@@ -340,6 +378,7 @@ export async function runLocalAutoSync(
         rate_limited: false,
         last_error: null,
         exporter_version: packageJson.version,
+        project_inventory: false,
     }
     ScriptStorage.set(KEY_LOCAL_SYNC_LAST_RUN_AT, Date.now())
     await publishStatus(endpoint, status)
@@ -359,6 +398,7 @@ export async function runLocalAutoSync(
 
     const items: ApiConversationItem[] = []
     const loadInventory = async (project: string | null) => {
+        checkDeadline()
         const remaining = maxConversations - uniqueConversations(items).length
         if (remaining <= 0) {
             errors.push('conversation inventory reached maxConversations')
@@ -376,6 +416,7 @@ export async function runLocalAutoSync(
             if (error instanceof RateLimitError || /\b429\b/.test(errorText(error))) status.rate_limited = true
         }
         const found = await fetchAllConversations(project, remaining, undefined, onHasMore, onError)
+        checkDeadline()
         items.push(...found)
         if (capped && !failed) errors.push(`${project ?? 'main'} inventory reached maxConversations`)
     }
@@ -385,6 +426,16 @@ export async function runLocalAutoSync(
     onProgress?.({ stage: 'loading projects' })
     try {
         const projects = await fetchProjects()
+        try {
+            const response = await localRequest('POST', bridgeEndpoint(endpoint, 'projects'), {
+                projects: projects.map(project => ({ id: project.id, name: project.display.name })),
+            })
+            if (response.status < 200 || response.status >= 300) throw new Error(`HTTP ${response.status}: ${response.responseText}`)
+            status.project_inventory = true
+        }
+        catch (error) {
+            errors.push(`project inventory: ${errorText(error)}`)
+        }
         for (const project of projects) await loadInventory(project.id)
     }
     catch (error) {
@@ -399,11 +450,13 @@ export async function runLocalAutoSync(
     status.checked = checkedItems.length
     status.skipped = checkedItems.length - syncItems.length
     for (let i = 0; i < chunks.length; i++) {
+        checkDeadline()
         onProgress?.({ stage: `fetching batch ${i + 1}/${chunks.length}`, completed: status.synced, total: syncItems.length })
         const { conversations, skipped, sessionExpired } = await runQueue(chunks[i], (progress) => {
             if (progress.stage.startsWith('rate-limited')) status.rate_limited = true
             onProgress?.(progress)
         })
+        checkDeadline()
         if (sessionExpired) {
             status.session_expired = true
             errors.push('ChatGPT session expired during conversation fetch')
@@ -424,6 +477,7 @@ export async function runLocalAutoSync(
         if (i < chunks.length - 1) await sleep(400)
         if (sessionExpired) break
     }
+    checkDeadline()
     status.queued = getQueue().length
     status.coverage_complete = errors.length === 0 && receiverOnline && status.queued === 0
     status.last_error = errors.length ? errors.join('; ') : null
@@ -436,6 +490,7 @@ export async function runLocalAutoSync(
     }
     onProgress?.({ stage: status.coverage_complete ? 'done' : 'partial', completed: status.synced, total: syncItems.length })
     return {
+        status: { ...status },
         conversations: status.synced,
         batches: chunks.length,
         queued: status.queued,
@@ -444,29 +499,58 @@ export async function runLocalAutoSync(
     }
 }
 
-export function scheduleLocalAutoSync() {
-    // ponytail: each open tab schedules independently; add a cross-tab lease if duplicate runs become costly.
-    let running = false
-    const tick = async () => {
-        const settings = getSettings()
-        if (!settings.enabled || running) return
-        const intervalMs = Math.max(1, Number(settings.intervalMinutes) || DEFAULT_LOCAL_SYNC_INTERVAL_MINUTES) * 60_000
-        const lastRunAt = ScriptStorage.get<number>(KEY_LOCAL_SYNC_LAST_RUN_AT) ?? 0
-        if (Date.now() - lastRunAt < intervalMs) return
-
-        running = true
-        try {
-            await runLocalAutoSync(settings)
-        }
-        catch {
-            // Manual "Sync now" reports detailed failures in the dialog. The
-            // scheduled loop stays quiet so it does not spam the page console.
-        }
-        finally {
-            running = false
-        }
+export async function runLocalAutoSync(
+    options: Partial<LocalSyncSettings> = {},
+    onProgress?: (progress: LocalSyncProgress) => void,
+    request?: SyncRequest,
+): Promise<LocalSyncResult> {
+    if (syncRunning) throw new Error('another sync is running in this tab')
+    syncRunning = true
+    const endpoint = options.endpoint || DEFAULT_LOCAL_SYNC_ENDPOINT
+    try {
+        activeLease = request ?? (await bridgePost(endpoint, 'sync-lease', { timeout_seconds: 1800 })).lease ?? null
+        if (!activeLease) throw new Error('receiver did not grant a sync lease')
+        return await performLocalAutoSync(options, onProgress)
     }
+    finally {
+        const lease = activeLease
+        activeLease = null
+        if (lease && !request) {
+            try {
+                await bridgePost(endpoint, 'sync-lease/release', { claim_token: lease.claim_token })
+            }
+            catch { /* Expired leases are released by the receiver. */ }
+        }
+        syncRunning = false
+    }
+}
 
+export function scheduleLocalAutoSync() {
+    let polling = false
+    const tick = async () => {
+        if (polling || syncRunning) return
+        polling = true
+        const settings = getSettings()
+        try {
+            const { request } = await bridgePost(settings.endpoint, 'sync-requests/claim', {})
+            if (request) {
+                let status: SyncStatus | null = null
+                let error: string | null = null
+                try {
+                    status = (await runLocalAutoSync(settings, undefined, request)).status
+                }
+                catch (failure) { error = errorText(failure) }
+                await bridgePost(settings.endpoint, `sync-requests/${request.request_id}/result`, { claim_token: request.claim_token, status, error })
+                return
+            }
+            if (!settings.enabled) return
+            const intervalMs = Math.max(1, Number(settings.intervalMinutes) || DEFAULT_LOCAL_SYNC_INTERVAL_MINUTES) * 60_000
+            const lastRunAt = ScriptStorage.get<number>(KEY_LOCAL_SYNC_LAST_RUN_AT) ?? 0
+            if (Date.now() - lastRunAt >= intervalMs) await runLocalAutoSync(settings)
+        }
+        catch { /* Receiver offline, busy, or expired; retry quietly on the next poll. */ }
+        finally { polling = false }
+    }
     setTimeout(tick, 5_000)
-    setInterval(tick, 60_000)
+    setInterval(tick, 5_000)
 }

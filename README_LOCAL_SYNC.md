@@ -5,7 +5,7 @@ This branch adds incremental local archiving to the upstream userscript. Build w
 Run the standard-library receiver separately:
 
 ```powershell
-python receiver/chatgpt_auto_sync_receiver.py --archive-root "C:\Users\123\AI Chat History"
+python receiver/chatgpt_auto_sync_receiver.py --archive-root "path/to/archive"
 ```
 
 The receiver binds `127.0.0.1:8765` by default. See [receiver/README.md](receiver/README.md) for endpoints and optional arguments. The userscript only connects to this local address. The receiver must be running when queued batches are retried.
@@ -19,3 +19,11 @@ The receiver binds `127.0.0.1:8765` by default. See [receiver/README.md](receive
 `coverage_complete` is true only when the main and Project inventories finish, no cap or pagination error occurs, all required conversations are archived, and no payload remains queued. `last_success_at` advances only for that result. A partial run can still save raw conversations. Downstream jobs should check `coverage_complete` before treating the local archive as complete.
 
 Sync uses the main list and every Project list, deduplicates by ID, and compares remote update times with the receiver index. Failed receiver deliveries stay in the userscript retry queue and are sent on the next run. A live ChatGPT login is required for the browser-side smoke test; automated tests use synthetic API responses.
+
+## Project inventory and request leases
+
+`POST /chatgpt-web/projects` accepts only `{projects: [{id, name}]}` and requires the active `X-Local-Sync-Claim` lease token. IDs must match `g-p-[A-Za-z0-9-]{1,124}`; names must contain 1–500 characters without control characters. The limit is 10,000 entries and 2 MiB per request. The receiver validates the full payload before writing `projects.json` inside the archive root. Existing IDs retain their saved names; newly seen IDs are added atomically, including projects with no conversations. Missing projects are retained.
+
+`GET /ping` advertises `project_inventory` and `sync-requests-v1` capabilities. Sync status includes `project_inventory`; this is true only when the current project's directory upload succeeds. Inventory upload failure makes `coverage_complete` false. Older request-result statuses that omit the field are accepted with `project_inventory=false`.
+
+The receiver issues a lease through `POST /chatgpt-web/sync-lease`, or a pending request through `POST /chatgpt-web/sync-requests/claim`. Concurrent runs are rejected. Request results must carry the matching `claim_token` and complete current status; request IDs are queried through `GET /chatgpt-web/sync-requests/{request_id}`. A standalone lease is released through `POST /chatgpt-web/sync-lease/release` with `{claim_token}`. Expired claims cannot write results.

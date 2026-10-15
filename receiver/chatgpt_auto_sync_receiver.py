@@ -9,7 +9,7 @@ index so the userscript can skip conversations that already exist locally.
 from __future__ import annotations
 
 import argparse
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
@@ -20,6 +20,7 @@ import tempfile
 from threading import Lock
 from typing import Any, Iterable
 from urllib.parse import urlparse
+from uuid import uuid4
 
 
 DEFAULT_ARCHIVE_ROOT = Path.home() / "AI Chat History"
@@ -41,6 +42,7 @@ STATUS_DEFAULTS: dict[str, Any] = {
     "rate_limited": False,
     "last_error": None,
     "exporter_version": None,
+    "project_inventory": False,
 }
 
 
@@ -208,14 +210,14 @@ def read_status(path: Path) -> dict[str, Any]:
     return {**STATUS_DEFAULTS, **{key: saved[key] for key in STATUS_DEFAULTS if key in saved}}
 
 
-def update_status(path: Path, incoming: dict[str, Any]) -> dict[str, Any]:
+def validate_status(incoming: dict[str, Any]) -> None:
     unknown = set(incoming) - STATUS_DEFAULTS.keys()
     if unknown:
         raise ValueError(f"unknown status fields: {', '.join(sorted(unknown))}")
     for key in ("checked", "synced", "skipped", "queued"):
         if key in incoming and (type(incoming[key]) is not int or incoming[key] < 0):
             raise ValueError(f"{key} must be a non-negative integer")
-    for key in ("coverage_complete", "session_expired", "rate_limited"):
+    for key in ("coverage_complete", "session_expired", "rate_limited", "project_inventory"):
         if key in incoming and type(incoming[key]) is not bool:
             raise ValueError(f"{key} must be a boolean")
     for key in ("last_attempt_at", "last_success_at", "last_error", "exporter_version"):
@@ -223,10 +225,44 @@ def update_status(path: Path, incoming: dict[str, Any]) -> dict[str, Any]:
             raise ValueError(f"{key} must be a string or null")
     if "schema_version" in incoming and (type(incoming["schema_version"]) is not int or incoming["schema_version"] != 1):
         raise ValueError("unsupported schema_version")
+def update_status(path: Path, incoming: dict[str, Any]) -> dict[str, Any]:
+    validate_status(incoming)
     status = read_status(path)
     status.update({key: value for key, value in incoming.items() if key != "last_success_at" or value is not None})
     atomic_json(path, status)
     return status
+
+
+def validate_projects(projects: Any) -> dict[str, dict[str, str]]:
+    if not isinstance(projects, list) or len(projects) > 10000:
+        raise ValueError("projects must be an array of at most 10000 entries")
+    records = {}
+    for project in projects:
+        if not isinstance(project, dict) or set(project) != {"id", "name"}:
+            raise ValueError("each project must contain only id and name")
+        project_id, name = project["id"], project["name"]
+        if not isinstance(project_id, str) or not re.fullmatch(r"g-p-[A-Za-z0-9-]{1,124}", project_id):
+            raise ValueError("invalid project id")
+        if not isinstance(name, str) or not 1 <= len(name.strip()) <= 500 or len(name) > 500 or any(ord(char) < 32 for char in name):
+            raise ValueError("invalid project name")
+        if project_id in records:
+            raise ValueError("duplicate project id")
+        records[project_id] = project
+    return records
+
+
+def save_projects(path: Path, payload: dict[str, Any]) -> int:
+    if set(payload) != {"projects"}:
+        raise ValueError("project inventory payload must contain only projects")
+    incoming = validate_projects(payload["projects"])
+    saved = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {"projects": []}
+    if not isinstance(saved, dict) or "projects" not in saved:
+        raise ValueError("invalid saved project inventory")
+    records = validate_projects(saved["projects"])
+    for project_id, project in incoming.items():
+        records.setdefault(project_id, project)
+    atomic_json(path, {"projects": list(records.values()), "updated_at": iso_now()})
+    return len(records)
 
 
 def write_payload(archive_root: Path, payload: dict[str, Any]) -> Path:
@@ -290,6 +326,31 @@ def make_server(archive_root: Path, host: str = DEFAULT_HOST, port: int = DEFAUL
     index_path = state_dir / "conversation-index.json"
     status_path = state_dir / "sync-status.json"
     lock = Lock()
+    requests_path = state_dir / "sync-requests.json"
+    # ponytail: retain request history; prune terminal records if request volume warrants it.
+    bridge = json.loads(requests_path.read_text(encoding="utf-8")) if requests_path.exists() else {"requests": {}, "lease": None}
+
+    def expire_requests() -> None:
+        now = datetime.now(timezone.utc)
+        changed = False
+        for request in bridge["requests"].values():
+            if request["state"] in {"pending", "running"} and parse_datetime(request["deadline_at"]) <= now:
+                request.update(state="expired", completed_at=iso_now(), error="sync request deadline exceeded")
+                changed = True
+        if bridge["lease"] and parse_datetime(bridge["lease"]["deadline_at"]) <= now:
+            bridge["lease"] = None
+            changed = True
+        if changed:
+            atomic_json(requests_path, bridge)
+
+    def deadline(payload: dict[str, Any], default: int = 300) -> str:
+        seconds = payload.get("timeout_seconds", default)
+        if type(seconds) is not int or not 5 <= seconds <= 1800:
+            raise ValueError("timeout_seconds must be an integer from 5 to 1800")
+        return (datetime.now(timezone.utc) + timedelta(seconds=seconds)).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+    def public_request(request: dict[str, Any]) -> dict[str, Any]:
+        return {key: value for key, value in request.items() if key != "claim_token"}
     atomic_json(index_path, build_index(archive_root))
     if not status_path.exists():
         atomic_json(status_path, STATUS_DEFAULTS)
@@ -310,7 +371,7 @@ def make_server(archive_root: Path, host: str = DEFAULT_HOST, port: int = DEFAUL
                 self.send_header("Access-Control-Allow-Origin", self.headers["Origin"])
                 self.send_header("Vary", "Origin")
                 self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-                self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Local-Sync-Token")
+                self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Local-Sync-Token, X-Local-Sync-Claim")
                 self.send_header("Access-Control-Allow-Private-Network", "true")
             super().end_headers()
 
@@ -334,7 +395,8 @@ def make_server(archive_root: Path, host: str = DEFAULT_HOST, port: int = DEFAUL
                 length = int(self.headers.get("Content-Length", ""))
             except ValueError as exc:
                 raise ValueError("invalid Content-Length") from exc
-            if length <= 0 or length > MAX_REQUEST_BYTES:
+            limit = 2 * 1024 * 1024 if urlparse(self.path).path == "/chatgpt-web/projects" else MAX_REQUEST_BYTES
+            if length <= 0 or length > limit:
                 raise ValueError("invalid Content-Length")
             payload = json.loads(self.rfile.read(length).decode("utf-8"))
             if not isinstance(payload, dict):
@@ -351,7 +413,7 @@ def make_server(archive_root: Path, host: str = DEFAULT_HOST, port: int = DEFAUL
                 return
             path = urlparse(self.path).path
             if path == "/ping":
-                self.send_json(200, {"ok": True, "archive_root": str(archive_root), "stats": stats})
+                self.send_json(200, {"ok": True, "archive_root": str(archive_root), "stats": stats, "capabilities": ["sync-requests-v1", "project_inventory"]})
                 return
             if path == "/chatgpt-web/index":
                 with lock:
@@ -364,6 +426,13 @@ def make_server(archive_root: Path, host: str = DEFAULT_HOST, port: int = DEFAUL
                     "records": records,
                     "count": len(records),
                 })
+                return
+            if path.startswith("/chatgpt-web/sync-requests/"):
+                with lock:
+                    expire_requests()
+                    request = bridge["requests"].get(path.rsplit("/", 1)[-1])
+                    response = {"ok": True, "request": public_request(request)} if request else {"ok": False, "error": "unknown request"}
+                self.send_json(200 if request else 404, response)
                 return
             if path == "/chatgpt-web/status":
                 with lock:
@@ -378,13 +447,79 @@ def make_server(archive_root: Path, host: str = DEFAULT_HOST, port: int = DEFAUL
                 self.send_json(401, {"ok": False, "error": "unauthorized"})
                 return
             path = urlparse(self.path).path
-            if path not in {"/chatgpt-web", "/chatgpt-web/status"}:
+            if path not in {"/chatgpt-web", "/chatgpt-web/projects", "/chatgpt-web/status", "/chatgpt-web/sync-requests", "/chatgpt-web/sync-requests/claim", "/chatgpt-web/sync-lease", "/chatgpt-web/sync-lease/release"} and not (path.startswith("/chatgpt-web/sync-requests/") and path.endswith("/result")):
                 self.send_json(404, {"ok": False, "error": "unknown endpoint"})
                 return
             try:
                 payload = self.read_payload()
                 with lock:
-                    if path == "/chatgpt-web/status":
+                    expire_requests()
+                    lease = bridge["lease"]
+                    if path == "/chatgpt-web/sync-requests":
+                        request = {"request_id": str(uuid4()), "state": "pending", "created_at": iso_now(), "deadline_at": deadline(payload), "claimed_at": None, "completed_at": None, "status": None, "error": None}
+                        bridge["requests"][request["request_id"]] = request
+                        atomic_json(requests_path, bridge)
+                        response = {"ok": True, "request": public_request(request)}
+                    elif path == "/chatgpt-web/sync-requests/claim":
+                        request = None if lease else next((item for item in bridge["requests"].values() if item["state"] == "pending"), None)
+                        if request:
+                            request.update(state="running", claimed_at=iso_now(), claim_token=secrets.token_hex(24))
+                            bridge["lease"] = {"claim_token": request["claim_token"], "deadline_at": request["deadline_at"], "request_id": request["request_id"]}
+                            atomic_json(requests_path, bridge)
+                        response = {"ok": True, "request": dict(request) if request else None}
+                    elif path == "/chatgpt-web/sync-lease":
+                        if lease:
+                            self.send_json(409, {"ok": False, "error": "another sync is running"})
+                            return
+                        bridge["lease"] = {"claim_token": secrets.token_hex(24), "deadline_at": deadline(payload, 1800), "request_id": None}
+                        atomic_json(requests_path, bridge)
+                        response = {"ok": True, "lease": bridge["lease"]}
+                    elif path == "/chatgpt-web/sync-lease/release":
+                        if not lease or lease["request_id"] is not None or payload.get("claim_token") != lease["claim_token"]:
+                            self.send_json(409, {"ok": False, "error": "stale sync lease"})
+                            return
+                        bridge["lease"] = None
+                        atomic_json(requests_path, bridge)
+                        response = {"ok": True}
+                    elif path.endswith("/result"):
+                        request = bridge["requests"].get(path.split("/")[-2])
+                        if not request:
+                            self.send_json(404, {"ok": False, "error": "unknown request"})
+                            return
+                        if request["state"] != "running" or not lease or lease["request_id"] != request["request_id"] or payload.get("claim_token") != lease["claim_token"]:
+                            self.send_json(409, {"ok": False, "error": "stale sync result"})
+                            return
+                        status = payload.get("status")
+                        error = payload.get("error")
+                        if error is not None and not isinstance(error, str):
+                            raise ValueError("error must be a string or null")
+                        if status is not None:
+                            if isinstance(status, dict):
+                                status = {"project_inventory": False, **status}
+                            if not isinstance(status, dict) or set(status) != set(STATUS_DEFAULTS):
+                                raise ValueError("result must contain a complete sync status")
+                            validate_status(status)
+                            attempt = parse_datetime(status["last_attempt_at"])
+                            success = parse_datetime(status["last_success_at"])
+                            claimed = parse_datetime(request["claimed_at"])
+                            now = datetime.now(timezone.utc) + timedelta(seconds=2)
+                            if not attempt or attempt < claimed or attempt > now:
+                                raise ValueError("result status predates this claim")
+                            if status["coverage_complete"] and (not success or success < attempt or success > now or status["session_expired"] or status["queued"] or status["last_error"]):
+                                raise ValueError("inconsistent successful sync status")
+                        elif not error:
+                            raise ValueError("result requires status or error")
+                        succeeded = status is not None and status["coverage_complete"] and not error
+                        request.update(state="succeeded" if succeeded else "failed", completed_at=iso_now(), status=status, error=error or (status["last_error"] if status else None))
+                        bridge["lease"] = None
+                        atomic_json(requests_path, bridge)
+                        response = {"ok": True, "request": public_request(request)}
+                    elif path in {"/chatgpt-web", "/chatgpt-web/status", "/chatgpt-web/projects"} and ((lease and self.headers.get("X-Local-Sync-Claim") != lease["claim_token"]) or (not lease and (self.headers.get("X-Local-Sync-Claim") or path == "/chatgpt-web/projects"))):
+                        self.send_json(409, {"ok": False, "error": "stale or missing sync lease"})
+                        return
+                    elif path == "/chatgpt-web/projects":
+                        response = {"ok": True, "count": save_projects(archive_root / "projects.json", payload)}
+                    elif path == "/chatgpt-web/status":
                         status = update_status(status_path, payload)
                         response = {"ok": True, "status": status}
                     else:
