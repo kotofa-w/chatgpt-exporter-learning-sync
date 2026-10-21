@@ -2,11 +2,11 @@
 
 基于 [ChatGPT Exporter](https://github.com/pionxzh/chatgpt-exporter) 的本地增量归档分支，为学习笔记和会话复盘提供可追溯的完整会话原文。
 
-仓库：[kotofa-w/chatgpt-exporter-learning-sync](https://github.com/kotofa-w/chatgpt-exporter-learning-sync)。保留上游的 Text、Markdown、HTML、PNG、JSON 导出功能，并增加浏览器同步与 Python 本地接收端。
+仓库：[kotofa-w/chatgpt-exporter-learning-sync](https://github.com/kotofa-w/chatgpt-exporter-learning-sync)。本文对应 **`feature/learning-os-auto-sync`** 分支，保留上游的 Text、Markdown、HTML、PNG、JSON 导出功能，并增加浏览器同步与 Python 本地接收端。默认 `master` 没有本地同步入口和 `receiver/`，请按下方命令克隆同步分支。
 
 ## 功能
 
-- 每轮从第一页枚举 ChatGPT 主会话列表与所有 Projects，按会话 ID 去重。
+- 每轮从第一页枚举 ChatGPT 主会话列表与 Projects，按会话 ID 去重，受下述扫描额度限制。
 - 项目 ID 和名称写入归档根的 `projects.json`，即使项目没有会话也保留；已有同 ID 名称不会被自动覆盖。
 - 与本地索引比较更新时间，只下载新增或更新的完整会话 JSON。
 - 原始批次文件不覆盖；索引指向每个会话最新归档版本。
@@ -19,12 +19,13 @@
 
 ### 1. 获取并构建本项目
 
-需要 Node.js 20+、pnpm（项目指定版本为 8.14.1）和 Python 3.10+。接收端只使用 Python 标准库。
+建议使用 **Node.js 24**（与当前 CI 一致）和 **pnpm 8.14.1**；本地同步另需 Python 3.10+，接收端只使用 Python 标准库。`package.json` 虽声明 Node.js `>=20.0.0`，但当前锁定的 Vitest 5 要求 Node.js `^22.12.0 || ^24.0.0 || >=26.0.0`，lint-staged 17 要求 `>=22.22.1`，不能将任意 Node.js 20 视为完整开发环境。
 
 ```powershell
 git clone --branch feature/learning-os-auto-sync https://github.com/kotofa-w/chatgpt-exporter-learning-sync.git
 cd chatgpt-exporter-learning-sync
-pnpm install
+pnpm --version # 应为 8.14.1
+pnpm install --frozen-lockfile
 pnpm build
 ```
 
@@ -50,11 +51,11 @@ python receiver/chatgpt_auto_sync_receiver.py --archive-root "$HOME\AI Chat Hist
 Invoke-RestMethod http://127.0.0.1:8765/ping
 ```
 
-返回 `ok: true` 表示接收端可用。默认浏览器同步地址固定为该端口；不要仅修改接收端端口。启动命令不会安装开机服务，重启后需重新启动。
+返回 `ok: true` 表示接收端可用。浏览器默认连接 `http://127.0.0.1:8765/chatgpt-web`，设置界面没有端口或 token 输入项。当前 userscript 不发送 `X-Local-Sync-Token`；使用上述命令保持默认端口且不传 `--token`，仅修改接收端端口或启用 token 会导致默认脚本无法同步。启动命令不会安装开机服务，重启后需重新启动。
 
 ### 4. 执行同步
 
-在 ChatGPT 页面打开 **Exporter / 导出助手 → Settings / 设置**，点击 **Sync Now**，等待同步结束。需要周期同步时启用 **Enable Auto Sync** 并保存间隔。
+在 ChatGPT 页面打开 **Exporter / 导出助手 → Settings / 设置**，点击 **Sync Now**，等待同步结束。需要周期同步时启用 **Enable Auto Sync** 并调整间隔，设置会随修改保存。
 
 浏览器必须保持已登录的 ChatGPT 标签页打开，接收端也必须运行。下游定时任务应主动触发本轮同步并等待结果，不能只依赖此前的 60 分钟同步状态。
 
@@ -75,9 +76,9 @@ AI Chat History/
 下游读取前至少检查：
 
 - `last_attempt_at` 不早于本轮启动时间，`last_success_at` 不早于该次 attempt。
-- `coverage_complete=true`、`queued=0`、`last_error=null`，对应原文存在且可读。
+- `coverage_complete=true`、`project_inventory=true`、`queued=0`、`last_error=null`，对应原文存在且可读。
 
-部分失败也可能已保存原文，不能把“有文件”当成完整同步成功。覆盖标记仅表示本轮主列表与 Projects 枚举及所需原文归档完成，不保证 Archived、Shared 或 Codex/Work 会话全量。当前每个列表扫描上限为 5000；触及上限且还有下一页时会标记不完整。归档保存 API 返回的会话对象，不保证附件二进制文件已下载。
+部分失败也可能已保存原文，不能把“有文件”当成完整同步成功。覆盖标记仅表示本轮主列表与 Projects 枚举及所需原文归档完成，不保证 Archived、Shared 或 Codex/Work 会话全量。当前一轮主列表与 Projects 共享最多 5000 个去重会话的额度，按主列表、各 Project 的顺序扫描；达到上限时会保守标记不完整，即使列表恰好有 5000 条也可能如此。此额度独立于手动导出的 Export All Limit 设置。归档保存 API 返回的会话对象，不保证附件二进制文件已下载。
 
 ## 主动同步请求
 
@@ -91,7 +92,7 @@ $job = Invoke-RestMethod -Method Post `
 Invoke-RestMethod "http://127.0.0.1:8765/chatgpt-web/sync-requests/$($job.request.request_id)"
 ```
 
-创建请求不等于同步完成。等待请求进入最终状态，并检查其 `status`；失败或超时不得推进下游完整检查点。浏览器领取请求不依赖 Enable Auto Sync 开关，但仍要求标签页打开且脚本运行。
+创建请求不等于同步完成。脚本约每 5 秒领取一次请求；查询响应的 `request.state` 会从 `pending`、`running` 进入 `succeeded`、`failed` 或 `expired`。仅在 `succeeded` 后，结合 `request.status` 的完整性字段和原文文件检查推进下游检查点。请求默认 300 秒超时，可在创建请求的 JSON 中设置 `timeout_seconds`（5–1800 秒）。浏览器领取请求不依赖 Enable Auto Sync 开关，但仍要求已登录的普通 ChatGPT 标签页打开且脚本运行；共享页不会启动该轮询。
 
 ## 常见问题
 
@@ -110,6 +111,8 @@ python -m unittest discover -s receiver -p 'test_*.py' -v
 ```
 
 自动化测试使用合成 API 响应；真实浏览器同步需要已登录的 ChatGPT 页面。
+
+`pnpm test` 包含 TypeScript 类型检查和 Vitest。当前 Check workflow 监听各分支 push 与面向 `master` 的 pull request，在非 `chore: release` 提交上运行 lint/test；它不执行 build 或 Python 接收端测试。Release workflow 仅在 push 提交消息包含 `chore: release` 时执行 lint/test/build。因此开发同步分支时仍需手动执行上面的 build 和 Python 检查。
 
 ## 来源与许可证
 
